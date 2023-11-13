@@ -16,6 +16,17 @@
 #include <inttypes.h>
 
 #include "ethercat.h"
+#include <hiredis/hiredis.h>
+
+// setup redis context
+redisContext* context;
+struct timeval timeout = {1, 500000};
+const char* fx_key = "ati::gamma::fx";
+const char* fy_key = "ati::gamma::fy";
+const char* fz_key = "ati::gamma::fz";
+const char* mx_key = "ati::gamma::mx";
+const char* my_key = "ati::gamma::my";
+const char* mz_key = "ati::gamma::mz";
 
 char IOmap[4096];
 ec_ODlistt ODlist;
@@ -23,7 +34,6 @@ ec_OElistt OElist;
 boolean printSDO = TRUE;
 boolean printMAP = FALSE;
 char usdo[128];
-
 
 #define OTYPE_VAR               0x0007
 #define OTYPE_ARRAY             0x0008
@@ -195,7 +205,29 @@ char* SDO2string(uint16 slave, uint16 index, uint8 subidx, uint16 dtype)
          case ECT_INTEGER32:
          case ECT_INTEGER24:
             i32 = (int32*) &usdo[0];
-            sprintf(str, "0x%8.8x / %d", *i32, *i32);
+            // printf("Index %u\n", subidx == 1);  // subidx [1, 2, 3, 4, 5, 6]
+            sprintf(str, "0%8.8x / %d", *i32, *i32);
+            
+            // convert to units 
+            double reading = *i32 / (-1000000.);
+            printf("Value: %f ", reading);
+            char valueStr[50];  // Adjust the size as needed
+            snprintf(valueStr, sizeof(valueStr), "%f", reading);
+
+            if (subidx == 1) {
+                redisReply *reply = redisCommand(context, "SET %s %s", fx_key, valueStr);
+            } else if (subidx == 2) {
+                redisReply *reply = redisCommand(context, "SET %s %s", fy_key, valueStr);       
+            } else if (subidx == 3) {
+                redisReply *reply = redisCommand(context, "SET %s %s", fz_key, valueStr);        
+            } else if (subidx == 4) {
+                redisReply *reply = redisCommand(context, "SET %s %s", mx_key, valueStr);        
+            } else if (subidx == 5) {
+                redisReply *reply = redisCommand(context, "SET %s %s", my_key, valueStr);      
+            } else if (subidx == 6) {
+                redisReply *reply = redisCommand(context, "SET %s %s", mz_key, valueStr);
+       
+            }
             break;
          case ECT_INTEGER64:
             i64 = (int64*) &usdo[0];
@@ -520,6 +552,7 @@ int si_map_sii(int slave)
 
 void si_sdo(int cnt)
 {
+    while (1) {
     int i, j;
 
     ODlist.Entries = 0;
@@ -527,8 +560,9 @@ void si_sdo(int cnt)
     if( ec_readODlist(cnt, &ODlist))
     {
         printf(" CoE Object Description found, %d entries.\n",ODlist.Entries);
-        for( i = 0 ; i < ODlist.Entries ; i++)
-        {
+        i = 20;
+        // for( i = 0 ; i < ODlist.Entries ; i++)
+        // {
             uint8_t max_sub;
             char name[128] = { 0 };
 
@@ -559,26 +593,31 @@ void si_sdo(int cnt)
                 max_sub = ODlist.MaxSub[i];
             }
 
-            for( j = 0 ; j < max_sub+1 ; j++)
+            for( j = 1 ; j < max_sub+1 ; j++)
             {
                 if ((OElist.DataType[j] > 0) && (OElist.BitLength[j] > 0))
                 {
                     snprintf(name, sizeof(name) - 1, "\"%s\"", OElist.Name[j]);
+                    // printf("Test ");
                     printf("    0x%02x      %-40s      [%-16s %6s]      ", j, name,
                            dtype2string(OElist.DataType[j], OElist.BitLength[j]),
                            access2string(OElist.ObjAccess[j]));
                     if ((OElist.ObjAccess[j] & 0x0007))
                     {
+                        // printf("Test");
                         printf("%s", SDO2string(cnt, ODlist.Index[i], j, OElist.DataType[j]));
+                        // SDO2string(cnt, ODlist.Index[i], j, OElist.DataType[j]);
+                        // printf("Data %u", ODlist.Index[j]);
                     }
                     printf("\n");
                 }
             }
-        }
+        // }
     }
     else
     {
         while(EcatError) printf("%s", ec_elist2string());
+    }
     }
 }
 
@@ -620,8 +659,9 @@ void slaveinfo(char *ifname)
 
 
          ec_readstate();
-         for( cnt = 1 ; cnt <= ec_slavecount ; cnt++)
-         {
+         cnt = 3;
+        //  for( cnt = 1 ; cnt <= ec_slavecount ; cnt++)
+        //  {
             printf("\nSlave:%d\n Name:%s\n Output size: %dbits\n Input size: %dbits\n State: %d\n Delay: %d[ns]\n Has DC: %d\n",
                   cnt, ec_slave[cnt].name, ec_slave[cnt].Obits, ec_slave[cnt].Ibits,
                   ec_slave[cnt].state, ec_slave[cnt].pdelay, ec_slave[cnt].hasdc);
@@ -669,7 +709,7 @@ void slaveinfo(char *ifname)
                     ec_slave[cnt].CoEdetails, ec_slave[cnt].FoEdetails, ec_slave[cnt].EoEdetails, ec_slave[cnt].SoEdetails);
             printf(" Ebus current: %d[mA]\n only LRD/LWR:%d\n",
                     ec_slave[cnt].Ebuscurrent, ec_slave[cnt].blockLRW);
-            if ((ec_slave[cnt].mbx_proto & ECT_MBXPROT_COE) && printSDO)
+            if ((ec_slave[cnt].mbx_proto & ECT_MBXPROT_COE) && printSDO)                     
                     si_sdo(cnt);
                 if(printMAP)
             {
@@ -678,7 +718,7 @@ void slaveinfo(char *ifname)
                     else
                         si_map_sii(cnt);
             }
-         }
+        //  }
       }
       else
       {
@@ -697,7 +737,11 @@ void slaveinfo(char *ifname)
 char ifbuf[1024];
 
 int main(int argc, char *argv[])
-{
+{  
+   context = redisConnectWithTimeout("127.0.0.1", 6379, timeout);
+   printf("Connected to redis\n");
+//    redisReply *reply = redisCommand(context, "SET %s %s", "force_sensor_running_flag", "true");
+
    ec_adaptert * adapter = NULL;
    printf("SOEM (Simple Open EtherCAT Master)\nSlaveinfo\n");
 
